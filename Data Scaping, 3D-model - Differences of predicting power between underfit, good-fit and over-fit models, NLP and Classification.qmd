@@ -1,0 +1,952 @@
+---
+title: "Data Scaping, 3D-model - Differences of predicting power between underfit, good-fit and over-fit models, NLP and Classification"
+author: "Joseph Lok In Ho"
+date: "20/02/2025"
+format: html
+editor: 
+  markdown: 
+    wrap: sentence
+---
+
+\*All the codes and write-up are written by the author - The document is a demonstration of the author's coding, data analysis, and data interpretation skills.
+
+## Challenge 1 - Data Scraping
+
+```{r}
+#load all the libraries needed
+library(ggplot2)
+library(rvest)
+library(data.table)
+library(polite)
+library(httr2)
+library(httpuv)
+library(stringr)
+library(reshape2)
+library(RCurl)
+library(callr)
+library(httr)
+library(dplyr)
+
+```
+
+# **Ethics**
+
+```{r}
+#Check if there is any public API, by simply searching for example "books.toscrape.com API".Look for links labelled "API", "Developers", or "Documentation" in the website’s footer or main menu. Since API is designed for structured data access, using it is generally the more ethical approach, so it is mostly always recommended to start with looking at API if there is any. If not then.... 
+#Before scraping any website, it is better to check who can and cannot scrape their website. In another term, check all the ethical issues and legal issues(copyright and data usage). This can be done by adding a "/robots.txt" behind the weblink which tells all the ethical terms, which specify set of rules concerning behaviour of crawlers, bots, scrapers, and robots.
+
+robots_url <- "https://books.toscrape.com/robots.txt"
+
+# Make a GET request to fetch the robots.txt file
+response <- request(robots_url) %>%
+  req_error(is_error = function(resp) FALSE) %>%  # Disable automatic error throwing
+  req_perform()
+
+#it checks the status code
+if (response$status_code == 200) {
+  cat("robots.txt found. Content:\n")
+  cat(resp_body_string(response))
+} else if (response$status_code == 404) {
+  cat("robots.txt not found (404). This may indicate that the site has not provided explicit crawling guidelines.\n")
+} else {
+  cat("Unexpected response status:", response$status_code, "\n")
+}
+
+#Status 200 means the robots.txt file is present, and it prints all the robot exclusion rules. These rules indicate which parts of the website are off limits to automated agents. However the status code is 404, it means the site hasn’t provided a robots.txt file. However, the absence of robots.txt does not mean the scaping is allowed, the site's Terms of Service and any other legal issues should still be checked before getting any further. 
+```
+
+```{r}
+#it gets. the link for each catogories...Travel, Mystery, Historical Fiction
+categories_link <- function() {
+  index_url <- "https://books.toscrape.com/index.html"
+
+  # Sends a GET request to the base URL and retrieves the HTML content of the webpage.
+  response <- request(index_url) %>%
+    req_perform() %>%
+    resp_body_html()
+
+  # Extracts HTML nodes corresponding to the category links from the sidebar menu.
+  categories <- response %>% html_nodes(".side_categories ul li a")
+
+  # Extracts and trims the text of the category names from the HTML nodes.
+  category_names <- categories %>% html_text(trim = TRUE)
+
+  # Extracts the URLs (href attribute) associated with each category link.
+  category_urls <- categories %>% html_attr("href")
+
+  # Converts relative URLs into absolute URLs by appending the base URL.
+  category_urls <- paste0("https://books.toscrape.com/", category_urls)
+
+  # Creates a named character vector where category names are the names, and URLs are the values.
+  category_grid <- setNames(category_urls, category_names)
+  
+  # Returns the named character vector containing category names and their corresponding URLs.
+  return(category_grid)
+}
+
+# Calls the function to execute the scraping process and output the category names and URLs.
+categories_link()
+```
+
+```{r}
+
+book_data <- function(category_name, delay = 1, max_retries = 3, debug = FALSE) {
+  # Make sure the catogory names entered is valid
+  categories <- categories_link()
+  if (!(category_name %in% names(categories))) {
+    stop("Invalid category. Use categories_link() to see available categories.")
+  }
+  
+  category_url <- categories[[category_name]]
+  books_data <- data.frame(Title = character(),
+                           Price = character(),
+                           Rating = character(),
+                           stringsAsFactors = FALSE)
+  
+
+  page_num <- 1
+  #This is to check if the re-visiting debug function works. In the situation, since I am getting data from crime category, if uncomment the link for crime, then it will block the scraping. 
+  #if the mystery link is uncomment, since I am getting data from crime, not mystery, nothing would happen, unless the person is scraping data from mystery category.
+  visited_urls <- c()
+  #visited_urls <- c("https://books.toscrape.com/catalogue/category/books/crime_51/index.html")
+  #visited_urls <- c("https://books.toscrape.com/catalogue/category/books/mystery_3/index.html")
+  repeat {
+    # Stop if URL is NULL or already visited
+    if (is.null(category_url)) break
+    if (category_url %in% visited_urls) {
+      message("This page has already been visited: ", category_url, " - visited")
+      if (debug) {
+        message("Final visited URLs: ", paste(visited_urls, collapse = ", "))
+      }
+      break
+    }
+    
+    visited_urls <- c(visited_urls, category_url)
+    message("Scraping page ", page_num, ": ", category_url, " at ", Sys.time())
+    
+    # Attempt HTTP request with retries
+    retries <- 0
+    success <- FALSE
+    while (retries < max_retries && !success) {
+      response <- tryCatch({
+        GET(category_url)
+      }, error = function(e) {
+        message("HTTP error encountered: ", e$message)
+        return(NULL)
+      })
+      
+      if (!is.null(response) && response$status_code == 200) {
+        success <- TRUE
+      } else {
+        retries <- retries + 1
+        message("Error retrieving page. Retrying in ", delay, " second(s)... (Attempt ", retries, " of ", max_retries, ")")
+        Sys.sleep(delay)
+      }
+    }
+    
+    if (!success) {
+      message("Failed to retrieve ", category_url, " after ", max_retries, " attempts. Skipping page.")
+      break
+    }
+    
+    # Parse page content
+    page_info <- content(response, "text")
+    html <- read_html(page_info)
+    
+    # Extract book information from the page
+    books <- html %>% html_nodes(".product_pod")
+    titles <- books %>% html_nodes("h3 a") %>% html_attr("title")
+    prices <- books %>% html_nodes(".price_color") %>% html_text()
+    ratings <- books %>% html_nodes(".star-rating") %>% html_attr("class")
+    ratings <- gsub("star-rating ", "", ratings)
+    
+    page_data <- data.frame(Title = titles, Price = prices, Rating = ratings, stringsAsFactors = FALSE)
+    books_data <- bind_rows(books_data, page_data)
+    
+    # Check for the next page link
+    next_page <- html %>% html_node(".next a") %>% html_attr("href")
+    if (!is.na(next_page) && length(next_page) > 0) {
+      category_url <- paste0(dirname(category_url), "/", next_page)
+      page_num <- page_num + 1
+    } else {
+      category_url <- NULL
+    }
+    
+    # Delay to avoid overloading the server
+    Sys.sleep(delay)
+  }
+  
+  return(books_data)
+}
+
+
+book_data("Mystery", debug = TRUE)
+```
+
+# Write-up
+
+## **Ethical Foundations and Site Permissions**
+
+Before attempting any scraping, the code first emphasizes the importance of checking whether the site permits data extraction(After looking for API, seeing if there is any structured data provided.).
+It begins by querying the website's robots.txt file (by appending "/robots.txt" to the base URL).
+By making a GET request and then evaluating the HTTP status code, your code informs the user if the robots.txt file is present.
+When the status is 200, the script prints the robots.txt content, thereby revealing the site's crawling rules and which sections are disallowed for automated agents.
+Conversely, if a 404 is received, the code warns that explicit crawling guidelines are not available, reminding the user to review the site's Terms of Service and legal considerations before proceeding.
+
+### **Extracting Category Information**
+
+The next portion of the code focuses on retrieving the list of book categories available on the website.
+A dedicated function sends a GET request to the homepage ("index.html") and parses the resulting HTML with rvest.
+Using CSS selectors, the function isolates category links from the sidebar and extracts both the text (i.e., the category names) and the relative URLs.
+These relative URLs are then converted into absolute URLs by appending the base URL.
+The function ultimately returns a named character vector, mapping each category name to its corresponding URL.
+This design not only organizes the available categories but also allows for easy validation of user input when choosing a category to scrape.
+
+### **Building a Robust Crawler Function**
+
+The heart of the solution lies in the crawler function designed to extract book details (title, price, and star rating) from a given category.
+This function begins by validating that the user-provided category exists in the list of categories generated by the previous function.
+If the category is invalid, the function halts and displays an informative error message.
+
+To prevent scraping the same page multiple times, the function uses a mechanism based on a vector of visited URLs.
+By pre-populating this vector (for testing purposes, you simulate a duplicate scenario by inserting a URL from a different category), the code checks whether the current category URL has already been visited.
+If a duplicate is detected, a "visited" message is printed, and the scraping process stops for that page.
+This approach prevents infinite loops or redundant requests, ensuring that each page is processed only once.
+
+The crawler also includes robust error handling for HTTP requests.
+Within a loop, the function attempts to fetch the page using GET and employs a retry mechanism to handle transient errors.
+If the request fails (e.g., due to an invalid URL or network issue), a tryCatch block captures the error and prints an HTTP error message.
+The function then waits for a specified delay before retrying, incrementing a retry counter until it reaches a set maximum.
+If the maximum retries are exceeded, the function prints a failure message and skips the problematic page.
+This retry mechanism significantly enhances the reliability of your scraper.
+
+Once a page is successfully retrieved, the HTML content is parsed to extract the necessary book data.
+Using rvest and specific CSS selectors, your code locates book containers, extracts the title attribute from anchor elements within an H3 tag, and retrieves the price and star rating information.
+For star ratings, a gsub function removes extraneous text (specifically, "star-rating"), leaving only the core rating value.
+The extracted information is then assembled into a data frame, which is incrementally built up with data from each page.
+
+The crawler function is designed to handle pagination automatically.
+After processing a page, the function checks for a "Next" page link using a CSS selector.
+If a link is found, the URL is updated (by combining the directory of the current URL with the relative link), and the page counter is incremented.
+If no further pages exist, the loop terminates.
+Additionally, the function includes a delay (via Sys.sleep) after each page is processed to avoid overwhelming the server---a key aspect of ethical scraping.
+
+Debug messages are interspersed throughout the function.
+When the debug flag is set to TRUE, the function prints timestamps, current page numbers, URLs being scraped, and a final list of visited URLs.
+These messages are valuable for monitoring the scraper's progress, verifying that the rate limiting works as intended, and confirming that duplicate pages are not revisited.
+
+## Guidance
+
+### 1. Changing Base URLs or Endpoints:
+
+In the categories_link function, the variable index_url defines the main page where category links are found.
+You can update this URL to target a different website or a different section of the site if needed.
+Similarly, for specific pages or sections, you can modify how relative URLs are combined (using paste0("https://books.toscrape.com/", category_urls)).
+
+### 2. Modifying CSS Selectors:
+
+The extraction of data relies on CSS selectors (e.g., .side_categories ul li a for categories or .product_pod for books).
+If the website changes its structure, you can update these selectors to match the new HTML layout.
+In the book_data function, adjust the selectors used for extracting book details (e.g., "h3 a", ".price_color", and ".star-rating") if the target site uses different classes or tags.
+
+### 3.Customizing Request Behavior:
+
+You can change request parameters like timeouts, headers, or the User-Agent string if needed.
+For example, if you switch to httr2 throughout, modify the req_user_agent() call to use a different browser signature.
+The retry parameters (delay and max_retries) in the book_data function are variables you can adjust to suit different server response behaviors or network conditions.
+
+### 4.Adjusting Data Output:
+
+The functions currently build data frames containing Title, Price, and Rating.
+If you need additional information (e.g., author, availability, or ISBN), add extra extraction steps in the data parsing section using appropriate CSS selectors.To change the output format (such as writing to a CSV file instead of returning a data frame), simply add a line after data collection (e.g., using write.csv()).
+
+### 5.Managing Pagination and Duplicate Prevention:
+
+The pagination mechanism is based on detecting a "Next" link.
+If you need to adjust this logic (e.g., if the pagination format changes), update the CSS selector in the section that checks for the next page.
+The duplicate prevention is handled with a vector (visited_urls).
+You can customize this part if you need to track more metadata about visits or if you want to persist the visited URLs across sessions.
+
+## Challenge 2 - Fitting the Right Model
+
+```{r}
+#load libraries
+library(boot)
+library(caret)
+library(dplyr)
+library(glmnet)
+```
+
+```{r GenerateDate, echo=TRUE}
+set.seed(123)
+
+# Number of data points
+n <- 1000
+
+# Generate predictors (x1, x2)
+x1 <- runif(n, -3, 3)
+x2 <- rnorm(n)
+
+# Define the true underlying function that use x1 and x2 values
+true_function <- function(x1, x2) {
+    3*sin(x1) + 2*x1^2 - x2^3 + x1*x2 + 5
+}
+
+# Generate the true y values
+y_true <- true_function(x1, x2)
+
+# Add noise to y values
+noise_sd <- 3
+y <- y_true + rnorm(n, sd = noise_sd)
+
+# Combine everything into a single data frame
+data <- data.frame(x1 = x1, x2 = x2, y = y)
+
+```
+
+```{r, echo=FALSE, fig.width=8, fig.height=8}
+# Create a grid of x1 and x2 values
+x1_grid <- seq(min(data$x1), max(data$x1), length.out = 50)
+x2_grid <- seq(min(data$x2), max(data$x2), length.out = 50)
+z_grid <- outer(x1_grid, x2_grid, true_function) # Calculate z values
+
+# Create the 3D plot
+persp(x1_grid, x2_grid, z_grid,
+      xlab = "x1", ylab = "x2", zlab = "y",
+      theta = 45, phi = 30,  # Adjust viewing angles
+      col = "lightblue",  # Adjust color
+      main = "True Function")
+```
+
+```{r}
+#models generation
+# 1. Underfitting Model: Only main effects 
+under <- lm(y ~ x1 + x2, data = data)
+
+# 2. Good Fit Model: Model using polynomial basis expansions
+good <- lm(y ~ poly(x1, 3, raw = TRUE) + poly(x2, 3, raw = TRUE) + I(x1*x2), data = data)
+
+# 3. Overfitting Model: Use high-degree polynomials
+over <- lm(y ~ poly(x1, 10, raw = TRUE) + poly(x2, 10, raw = TRUE) + I(x1*x2), data = data)
+```
+
+```{r}
+#quadratic expansion instead
+good <- lm(y ~ x1 + x2 +sin(x1) + I(x1^2) + I(x2^3) + I(x1 * x2), data = data)
+#quadratic expansion
+over <- lm(y ~ x1 + x2 + sin(x1)+
+              I(x1^2) + I(x2^2) + I(x1 * x2) +
+              I(x1^3) + I(x2^3) + I(x1^2 * x2) + I(x1 * x2^2) + I((x1+x2)^2), data = data)
+#Hybrid approach(quadratic + polynomial)
+over <- lm(y ~ poly(x1, 3, raw = TRUE) + poly(x2, 3, raw = TRUE) + I(x1*x2) +
+                    I(x1^3) + I(x2^2) + I(x1^2*x2) + I(x1*x2^2), data = data)
+```
+
+```{r}
+# Define a function to compute the average MSE across folds 
+cv_mse <- function(formula, data, folds) {
+  mse_values <- sapply(folds, function(test_indices) {
+    # Partition the data into training and testing sets
+    trainData <- data[-test_indices, ]
+    testData  <- data[test_indices, ]
+    
+    # Fit the model on the training data
+    model <- lm(formula, data = trainData)
+    
+    # Predict on the test set
+    predictions <- predict(model, newdata = testData)
+    
+    # Calculate MSE for the current fold
+    mean((predictions - testData$y)^2)
+  })
+  
+  # Return the average MSE across all folds
+  mean(mse_values)
+}
+```
+
+```{r}
+#number of folds for CV
+set.seed(123)
+k <- 10
+
+# Create 10 folds based on the response variable
+folds <- createFolds(data$y, k = k, list = TRUE, returnTrain = FALSE)
+
+# Underfitting model CV
+cv_under <- cv.glm(data, under, K = k)$delta[1]
+
+# Good Fit model CV
+cv_good  <- cv.glm(data, good, K = k)$delta[1]
+
+# Overfitting model CV
+cv_over  <- cv.glm(data, over, K = k)$delta[1]
+
+# Calculate CV MSE for Each Model:
+mse_under <- cv_mse(under, data, folds)
+mse_good  <- cv_mse(good, data, folds)
+mse_over  <- cv_mse(over, data, folds)
+
+cat("10-fold CV MSE for Underfitting Model:", mse_under, "\n")
+cat("10-fold CV MSE for Good Fit Model:     ", mse_good, "\n")
+cat("10-fold CV MSE for Overfitting Model:  ", mse_over, "\n")
+```
+
+```{r}
+#MSE for trained data
+# Get predictions on training data
+# Compute training MSE
+train_preds_under <- predict(under, newdata = data)         
+mse_train_under <- mean((data$y - train_preds_under)^2)       
+
+train_preds_good <- predict(good, newdata = data)            
+mse_train_good <- mean((data$y - train_preds_good)^2)         
+
+train_preds_over <- predict(over, newdata = data)             
+mse_train_over <- mean((data$y - train_preds_over)^2)         
+
+cat("Training MSE for Underfitting Model:", mse_train_under, "\n")
+cat("Training MSE for Good Fit Model:     ", mse_train_good, "\n")
+cat("Training MSE for Overfitting Model:  ", mse_train_over, "\n")
+
+#see if it aligns with average mse on training data
+adj_r2_under <- summary(under)$adj.r.squared
+adj_r2_good <- summary(good)$adj.r.squared
+adj_r2_over <- summary(over)$adj.r.squared
+
+
+cat("Adjusted R² for Underfitting Model:", adj_r2_under, "\n")
+cat("Adjusted R² for Good Fit Model:     ", adj_r2_good, "\n")
+cat("Adjusted R² for Overfitting Model:  ", adj_r2_over, "\n")
+```
+
+```{r}
+#restating the model formula
+# Underfitting Model:
+under <- lm(y ~ x1 + x2, data = data)
+
+# Overfitting Model 
+over <- lm(y ~ poly(x1, 3, raw = TRUE) + poly(x2, 3, raw = TRUE) + I(x1*x2) +
+                    I(x1^3) + I(x2^2) + I(x1^2*x2) + I(x1*x2^2), data = data)
+
+
+# Create a grid of x1 and x2 values for prediction
+x1_grid <- seq(min(data$x1), max(data$x1), length.out = 50)
+x2_grid <- seq(min(data$x2), max(data$x2), length.out = 50)
+grid_data <- expand.grid(x1 = x1_grid, x2 = x2_grid)
+
+
+# Generate predictions on the grid for each model
+# Underfitting model predictions
+pred_under <- predict(under, newdata = grid_data)
+# Reshape predictions into a matrix for persp()
+z_under <- matrix(pred_under, nrow = length(x1_grid), ncol = length(x2_grid))
+
+# Overfitting model predictions
+pred_over <- predict(over, newdata = grid_data)
+# Reshape predictions into a matrix for persp()
+z_over <- matrix(pred_over, nrow = length(x1_grid), ncol = length(x2_grid))
+
+
+# Plot the True Function for reference
+z_true <- outer(x1_grid, x2_grid, true_function)
+persp(x1_grid, x2_grid, z_true,
+      xlab = "x1", ylab = "x2", zlab = "y",
+      theta = 45, phi = 30,
+      col = "lightblue",
+      main = "True Function")
+
+
+# Plotting the Underfitting Model 
+par(mfrow = c(1,2))  # Set up a 1x2 plot layout
+
+persp(x1_grid, x2_grid, z_under,
+      xlab = "x1", ylab = "x2", zlab = "y",
+      theta = 45, phi = 30,
+      col = "pink",
+      main = "Underfitting Model")
+
+
+# Plotting the Overfitting Model 
+persp(x1_grid, x2_grid, z_over,
+      xlab = "x1", ylab = "x2", zlab = "y",
+      theta = 45, phi = 30,
+      col = "orange",
+      main = "Overfitting Model")
+
+# Reset plotting layout
+par(mfrow = c(1,1))
+
+```
+
+```{r}
+# Create a grid of x1 and x2 values for prediction
+x1_grid <- seq(min(data$x1), max(data$x1), length.out = 50)
+x2_grid <- seq(min(data$x2), max(data$x2), length.out = 50)
+grid_data <- expand.grid(x1 = x1_grid, x2 = x2_grid)
+
+# Compute the true surface on the grid
+z_true <- outer(x1_grid, x2_grid, true_function)
+
+# Generate model predictions on the grid
+pred_under <- predict(under, newdata = grid_data)
+z_under <- matrix(pred_under, nrow = length(x1_grid), ncol = length(x2_grid))
+
+pred_good <- predict(good, newdata = grid_data)   # Added for good fit
+z_good <- matrix(pred_good, nrow = length(x1_grid), ncol = length(x2_grid))
+
+pred_over <- predict(over, newdata = grid_data)
+z_over <- matrix(pred_over, nrow = length(x1_grid), ncol = length(x2_grid))
+
+# Create 2D Contour Plots to Compare Model Surfaces with the True Function
+par(mfrow = c(1,3))  # Arrange plots side by side
+
+# Good Fit Model vs. True Function
+contour(x1_grid, x2_grid, z_true, nlevels = 20, col = "lightblue",
+        main = "Good Fit Model vs. True", xlab = "x1", ylab = "x2")
+contour(x1_grid, x2_grid, z_good, nlevels = 20, col = "green", add = TRUE, lwd = 2)
+legend("topright", legend = c("True", "Good Fit"), fill = c("lightblue", "green"), cex = 0.8)
+
+# Overfitting Model vs. True Function
+contour(x1_grid, x2_grid, z_true, nlevels = 20, col = "lightblue",
+        main = "Overfitting Model vs. True", xlab = "x1", ylab = "x2")
+contour(x1_grid, x2_grid, z_over, nlevels = 20, col = "orange", add = TRUE, lwd = 2)
+legend("topright", legend = c("True", "Overfit"), fill = c("lightblue", "orange"), cex = 0.8)
+
+# Underfitting Model vs. True Function
+contour(x1_grid, x2_grid, z_true, nlevels = 20, col = "lightblue",
+        main = "Underfitting Model vs. True", xlab = "x1", ylab = "x2")
+contour(x1_grid, x2_grid, z_under, nlevels = 20, col = "pink", add = TRUE, lwd = 2)
+legend("topright", legend = c("True", "Underfit"), fill = c("lightblue", "pink"), cex = 0.8)
+
+par(mfrow = c(1,1))  # Reset layout
+
+```
+
+**Polynomial or Quadratic Expansions**\
+Polynomial or quadratic expansions offer a systematic way to include nonlinear relationships by adding terms such as (x\^2), (x\^3), or even higher powers into your regression model.
+This approach reduces the guesswork in identifying which transformations might capture the data's underlying patterns.
+However, using high-degree polynomials can lead to overfitting if the data does not truly exhibit such complex relationships.
+Moreover, high-degree polynomial terms may introduce multicollinearity, which makes the coefficient estimates less stable and reduces the interpretability of the model.
+
+**A Hybrid Approach for Overfitting**\
+A hybrid approach can be especially useful when you wish to demonstrate overfitting.
+In this scenario, the model begins with a moderate polynomial expansion and then extra, often unnecessary, terms are added.
+By combining the flexibility of polynomial expansions with manually chosen higher-order interactions, the model becomes more prone to fitting the noise present in the training data.
+While this additional complexity may reduce training error further, it typically does not improve---and may slightly worsen---predictive accuracy on new data, thereby illustrating the concept of overfitting.
+
+**Comparing Good Fit vs. Overfitting**\
+When comparing a good fit model to an overfitting model, the key distinction lies in the number and complexity of the terms included.
+A good fit model is designed to capture the essential structure of the true function, incorporating the necessary nonlinear transformations (such as (\sin(x)), (x\^2), or (x_2\^3)) and interactions, while still including the main effects.
+In contrast, the overfitting model builds upon the good fit model by layering additional higher-order polynomial and interaction terms that exceed what is necessary.
+These extra terms attempt to reduce the training error further but tend to capture noise, which does not generalize well to unseen data.
+
+**Adjusted (R\^2) on Training Data**\
+Adjusted (R\^2) measures the proportion of variance in the response variable explained by the model, while adjusting for the number of predictors included.
+It provides an indication of the model's explanatory power on the training data.
+In our analysis, the underfitting model exhibits a low adjusted (R\^2) accompanied by a high training MSE, indicating that it fails to capture important data patterns.
+On the other hand, both the good fit and overfitting models achieve a similar, higher adjusted (R\^2), suggesting that they capture most of the variance in the training data.
+However, since adjusted (R\^2) is computed solely on the training data, it does not reflect the model's predictive power on new data, which is why we also rely on cross-validation MSE for a more robust assessment.
+
+**Small MSE Differences and the Bias-Variance Trade-Off**\
+The Mean Squared Error (MSE) is a measure of the average squared difference between the observed actual values and the model's predicted values.
+It quantifies the error of the model in terms of the units of the response variable, with lower values indicating better predictive performance.
+When we compare cross-validated MSE values, we observed that the overfitting model's MSE is only slightly higher than that of the good fit model.
+This small difference suggests that the extra terms in the overfitting model are largely irrelevant in terms of enhancing predictive power.
+From a bias-variance trade-off perspective, the good fit model already achieves an optimal balance by capturing the main structure of the true function.
+Adding extra terms might marginally reduce bias further, but they also introduce additional variance.
+If these extra terms have negligible coefficients or are nearly zero, the increase in variance may be minimal, resulting in only a slight rise in MSE.
+In contrast, the underfitting model, which omits important nonlinear transformations, suffers from high bias, resulting in a much higher MSE.
+Thus, while the overfitting model is more complex, the small MSE difference compared to the good fit model reflects that the additional complexity does not yield a substantial predictive advantage.
+
+**2D Slices and Model Comparison**\
+By examining 2D slices---such as plotting (y) against (x_2) while holding (x_1) constant---we can further compare the models visually.
+In these plots, the curve from the good fit model typically aligns more closely with the true function than that from the overfitting model.
+Although the overfitting model may achieve a marginally lower training error, its predictions deviate slightly more from the true function when evaluated on new data, which is consistent with its slightly higher cross-validated MSE.
+This visual comparison reinforces the concept that additional complexity, when unnecessary, does not improve predictive performance and may even introduce small errors due to overfitting.
+
+## Challenge 3 - NLP and Classification
+
+In your third challenge, your task is to build a language-based classification model.
+
+In this challenge, you will be analysing a data containing social media posts on the topic of global warming.
+This dataset is provided to you (file called "ClimatePosts.csv" available on Moodle).
+This dataset includes messages posted by individuals who self-identify as those who believe that human activities are responsible for climate change (believers), as well as those who are skeptical about such claims (sceptics).
+User identity is provided in the column labeled "views".
+
+```{r}
+# install.packages("devtools") 
+#install packages if needed
+# devtools::install_github("quanteda/quanteda.corpora")
+# if (!requireNamespace("quanteda", quietly = TRUE)) install.packages("quanteda")
+# if (!requireNamespace("textstem", quietly = TRUE)) install.packages("textstem")
+# if (!requireNamespace("quanteda.textstats", quietly = TRUE)) install.packages("quanteda.textstats")
+
+
+
+```
+
+```{r}
+
+library(data.table)
+library(tm)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(quanteda)
+library(quanteda.textstats)
+library("devtools")
+devtools::install_github("quanteda/quanteda.corpora")
+library(pROC)
+
+```
+
+```{r}
+# Load the dataset from a CSV file into a data frame
+climate <- read.csv("ClimatePosts.csv")
+
+# Define a function containing common text cleaning steps used in both preprocessing functions
+preprocess_common <- function(text) {
+  text <- gsub("[^[:alnum:]_ ]", "", text)                     # Remove all characters except alphanumeric and underscores
+  text <- gsub("\\bclimatechange\\b", "climate_change", text, ignore.case = TRUE)  # Standardise the term "climatechange" to "climate_change"
+  text <- gsub("[0-9]", "", text)                                # Remove digits
+  text <- gsub("http\\S+\\s*", "", text)                         # Remove URLs
+  text <- gsub("\\s+", " ", text)                                # Replace multiple spaces with a single space
+  text <- trimws(text)                                           # Trim leading and trailing whitespace
+  text <- tolower(text)                                          # Convert text to lowercase for consistency
+  return(text)                                                 # Return the cleaned text
+}
+
+# Preprocessing function without stopword removal that simply calls the common cleaning function
+preprocess <- function(text) {
+  preprocess_common(text)
+}
+
+# Preprocessing function with stopword removal; extends the common cleaning by removing stopwords
+preprocess_stopwords <- function(text) {
+  text <- preprocess_common(text)                                # Apply common cleaning steps
+  text <- removeWords(text, stopwords("en"))                      # Remove common English stopwords
+  return(text)                                                   # Return the processed text
+}
+
+# Process posts:
+# 1. Create a new column 'processed_post' in the dataframe with posts processed to remove stopwords
+stopwords_rm <- climate %>% 
+  mutate(processed_post = sapply(post, preprocess_stopwords))
+
+# 2. Overwrite the original 'post' column with the version processed without removing stopwords
+climate$post <- sapply(climate$post, preprocess)
+
+# Display the first 10 cleaned posts to inspect the changes
+head(climate$post, 10)
+
+# Tokenisation and further cleaning:
+# Combine tokenisation, punctuation removal, and stopword removal into a single piped workflow
+tokenise_c <- climate$post %>%
+  tokens(remove_punct = TRUE) %>%    # Tokenize the text and remove punctuation
+  tokens_remove(stopwords("en"))      # Remove English stopwords from the tokens
+
+# Identify common collocations (bi-grams and tri-grams occurring at least 10 times) from the tokenised data
+climate_tstat_col_caps <- textstat_collocations(
+  tokenise_c,
+  size = 2:3,          # Look for 2-word and 3-word collocations
+  min_count = 10       # Only include collocations that occur at least 10 times
+)
+
+# Compound the identified collocations into single tokens using underscores to maintain phrase integrity
+tokenise_c <- tokens_compound(
+  tokenise_c,
+  climate_tstat_col_caps,
+  concatenator = "_"   # Combine words in a collocation with an underscore
+)
+
+
+head(climate_tstat_col_caps, 10)
+head(climate$post, 10)
+
+```
+
+```{r}
+## Top-Down Approach (Norms)
+
+norms <- read.csv("BRM-emot-submit.csv") %>%
+  transmute(
+    word = Word,          # Keep Word column
+    valence = V.Mean.Sum,   # Valence scores
+    arousal = A.Mean.Sum,   # Arousal scores
+    dominance = D.Mean.Sum  # Dominance scores
+  )
+
+# Create named dictionaries for quick lookup
+valence_dict  <- setNames(norms$valence, norms$word)
+arousal_dict  <- setNames(norms$arousal, norms$word)
+dominance_dict <- setNames(norms$dominance, norms$word)
+
+## Tokenise the processed posts from the stopwords-removed dataset
+tokens.stopwords <- tokens(stopwords_rm$processed_post)
+
+## Define function to calculate average VAD (Valence, Arousal, Dominance) scores for tokenised text
+calculate_vad_scores <- function(tokens, valence_dict, arousal_dict, dominance_dict) {
+  # Helper to calculate average score using a given dictionary
+  calc_avg <- function(token_vec, dict) {
+    scores <- dict[token_vec]
+    scores <- scores[!is.na(scores)]
+    if (length(scores) == 0) return(NA)
+    mean(scores)
+  }
+  # Return a named vector with scores for each dimension
+  c(
+    valence = calc_avg(tokens, valence_dict),
+    arousal = calc_avg(tokens, arousal_dict),
+    dominance = calc_avg(tokens, dominance_dict)
+  )
+}
+
+## Apply the scoring function to each tokenised post and combine the results into a data frame
+climate_scores.td <- do.call(rbind, lapply(tokens.stopwords, calculate_vad_scores,
+                                             valence_dict = valence_dict,
+                                             arousal_dict = arousal_dict,
+                                             dominance_dict = dominance_dict)) %>% 
+  as.data.frame()
+
+## Merge the scores with the original stopwords-removed dataset and drop the 'post' column
+climate_td <- stopwords_rm %>%
+  mutate(
+    valence_score   = climate_scores.td$valence,
+    arousal_score   = climate_scores.td$arousal,
+    dominance_score = climate_scores.td$dominance
+  ) %>%
+  select(-post)
+
+#The top-down model uses a dictionary-based approach to estimate the emotional content of text. It starts by loading a pre-established set of word norms, where each word is associated with valence, arousal, and dominance scores. These norms are organized into dictionaries for rapid lookup. When processing a text post, the model tokenises the post into individual words, then retrieves the corresponding VAD scores for each token from the dictionaries. For each emotional dimension, the model calculates an average score by ignoring tokens that lack a matching entry. If none of the words in the post are found in the dictionary, the score for that dimension is returned as missing. This method provides a straightforward, aggregate measure of the emotional tone of the text based on established word-level norms.
+```
+
+```{r}
+## Bottom-Up Approach
+
+# Create a Document-Feature Matrix (DFM) from tokenised text
+# and assign 'views' and 'id' from the original dataset as document variables.
+climate_dfm <- dfm(tokens(tokenise_c))
+docvars(climate_dfm) <- data.frame(views = climate$views, id = climate$id)
+
+# Compute regular TF-IDF and sublinear TF-IDF (using a logarithmic term frequency scheme)
+climate_dfm_tfidf     <- dfm_tfidf(climate_dfm)
+climate_dfm_sublinear <- dfm_tfidf(climate_dfm, scheme_tf = "logcount", base = 10)
+
+# Print the TF-IDF matrix for inspection
+print(climate_dfm_tfidf)
+
+# Helper function to extract the top N features from a TF-IDF matrix,
+# convert them to a data frame, and plot the results.
+plot_top_features <- function(tfidf_matrix, y_label, plot_title = NULL, n = 20) {
+  top_feats <- topfeatures(tfidf_matrix, n)
+  top_feats_df <- data.frame(feature = names(top_feats), score = top_feats)
+  
+  ggplot(top_feats_df, aes(x = reorder(feature, score), y = score)) +
+    geom_point() +
+    coord_flip() +
+    labs(x = NULL, y = y_label, title = plot_title) +
+    theme_minimal()
+}
+
+# Visualise the top 20 features for regular TF-IDF.
+plot_top_features(climate_dfm_tfidf, "TF-IDF Score")
+
+# Visualise the top 20 features for sublinear TF-IDF.
+plot_top_features(climate_dfm_sublinear, "Sublinear TF-IDF Score", "Top 20 Features with Sublinear TF-IDF")
+
+```
+
+```{r}
+## Classification for Bottom-Up Approach
+
+set.seed(200)  
+
+# Split data into training and test sets using a random sample of document IDs
+id_train <- sample(docvars(climate_dfm_tfidf)$id, 194, replace = FALSE)
+bottomup.train <- dfm_subset(climate_dfm_tfidf, id %in% id_train)
+bottomup.test  <- dfm_subset(climate_dfm_tfidf, !(id %in% id_train))
+
+# Perform LASSO logistic regression with 5-fold CV to select the optimal lambda
+lasso_bu <- cv.glmnet(
+  x = bottomup.train,
+  y = as.integer(docvars(bottomup.train)$views == "believer"),
+  alpha = 1,
+  nfolds = 5,
+  family = "binomial"
+)
+
+# Extract optimal lambda and corresponding coefficients; print top 20 features
+first_index <- which(lasso_bu$lambda == lasso_bu$lambda.min)
+beta <- lasso_bu$glmnet.fit$beta[, first_index]
+cat("Top 20 predictive features:\n")
+print(head(sort(beta, decreasing = TRUE), 20))
+
+# Ensure test set features match training set features
+same_ID <- dfm_match(bottomup.test, features = featnames(bottomup.train))
+
+# Obtain predicted probabilities for the test set
+pred <- predict(lasso_bu, same_ID, type = "response", s = lasso_bu$lambda.min)
+cat("Predicted probabilities (first few):\n")
+print(head(pred))
+
+# Convert predictions to binary classes and create a confusion table
+actual_class <- as.integer(docvars(same_ID)$views == "believer")
+predicted_class <- as.integer(predict(lasso_bu, same_ID, type = "class"))
+tab_class <- table(actual_class, predicted_class)
+cat("Confusion table:\n")
+print(tab_class)
+
+# Compute confusion matrix and extract key statistics (accuracy, recall, precision)
+cm <- confusionMatrix(tab_class, mode = "everything")
+cat("Confusion Matrix:\n")
+print(cm)
+accuracy <- cm$overall['Accuracy']
+recall <- cm$byClass['Sensitivity']
+precision <- cm$byClass['Pos Pred Value']
+cat("Accuracy:", accuracy, "\nRecall:", recall, "\nPrecision:", precision, "\n")
+
+# Generate and plot the ROC curve; compute and display AUC
+roc_obj <- roc(response = actual_class, predictor = as.vector(pred))
+plot(roc_obj, col = "blue", lwd = 2, main = "ROC Curve - lasso_bu Classification")
+auc_val <- auc(roc_obj)
+legend("bottomright", legend = paste("AUC =", round(auc_val, 3)), bty = "n")
+
+```
+
+```{r}
+## Top-Down Model Classification
+
+set.seed(200)  # For reproducibility
+
+# Split data into training and test sets (80/20 split)
+id_train_td <- sample(nrow(climate_td), size = round(0.8 * nrow(climate_td)), replace = FALSE)
+topdown.train <- climate_td[id_train_td, ]
+topdown.test  <- climate_td[-id_train_td, ]
+
+# Optionally, ensure complete cases for the predictors (if some rows have missing values)
+topdown.train <- topdown.train[complete.cases(topdown.train[, c("valence_score", "arousal_score", "dominance_score")]), ]
+topdown.test  <- topdown.test[complete.cases(topdown.test[, c("valence_score", "arousal_score", "dominance_score")]), ]
+
+# Create predictor matrices using model.matrix() to avoid dropping rows.
+# Remove the intercept column by selecting [, -1].
+x_train_td <- model.matrix(~ valence_score + arousal_score + dominance_score, data = topdown.train)[, -1]
+y_train_td <- as.integer(topdown.train$views == "believer")
+
+x_test_td  <- model.matrix(~ valence_score + arousal_score + dominance_score, data = topdown.test)[, -1]
+y_test_td  <- as.integer(topdown.test$views == "believer")
+
+# Impute any remaining missing values using column medians
+for (i in 1:ncol(x_train_td)) {
+  if (any(is.na(x_train_td[, i]))) {
+    x_train_td[is.na(x_train_td[, i]), i] <- median(x_train_td[, i], na.rm = TRUE)
+  }
+}
+for (i in 1:ncol(x_test_td)) {
+  if (any(is.na(x_test_td[, i]))) {
+    x_test_td[is.na(x_test_td[, i]), i] <- median(x_test_td[, i], na.rm = TRUE)
+  }
+}
+
+# Fit LASSO logistic regression with 5-fold CV to select the optimal lambda
+lasso_td <- cv.glmnet(
+  x = x_train_td,
+  y = y_train_td,
+  alpha = 1,            # LASSO penalty
+  nfolds = 5,           # 5-fold cross-validation
+  family = "binomial"   # Logistic regression (binary outcome)
+)
+
+# Extract optimal lambda and the corresponding coefficients
+opt_lambda_td <- lasso_td$lambda.min
+beta_td <- coef(lasso_td, s = "lambda.min")
+cat("Top-down model: Predictive coefficients:\n")
+print(beta_td)
+
+# Obtain predicted probabilities for the test set
+pred_td <- predict(lasso_td, newx = x_test_td, type = "response", s = "lambda.min")
+cat("Top-down model: Predicted probabilities (first few):\n")
+print(head(pred_td))
+
+# Convert predicted probabilities to binary classes using a 0.5 threshold and create a confusion table
+predicted_class_td <- as.integer(pred_td > 0.5)
+tab_class_td <- table(actual = y_test_td, predicted = predicted_class_td)
+cat("Top-down model: Confusion table:\n")
+print(tab_class_td)
+
+# Compute the confusion matrix and extract performance metrics
+cm_td <- confusionMatrix(tab_class_td, mode = "everything")
+cat("Top-down model: Confusion Matrix:\n")
+print(cm_td)
+accuracy_td <- cm_td$overall['Accuracy']
+recall_td <- cm_td$byClass['Sensitivity']
+precision_td <- cm_td$byClass['Pos Pred Value']
+cat("Top-down model: Accuracy:", accuracy_td, "\nRecall:", recall_td, "\nPrecision:", precision_td, "\n")
+
+# Generate and plot the ROC curve; compute and display AUC
+roc_obj_td <- roc(response = y_test_td, predictor = as.vector(pred_td))
+plot(roc_obj_td, col = "red", lwd = 2, main = "ROC Curve - Top-Down Model")
+auc_val_td <- auc(roc_obj_td)
+legend("bottomright", legend = paste("AUC =", round(auc_val_td, 3)), bty = "n")
+
+```
+
+### Data Pre-processing
+
+The process began by loading the climate posts dataset and cleaning the text.
+This involved removing punctuation, numbers, and URLs, collapsing extra spaces, trimming whitespace, and converting text to lowercase.
+Two preprocessing functions were defined: one that applied only the cleaning steps and another that additionally removed stopwords.
+For the bottom-up approach, tokenisation was performed on the cleaned posts, with punctuation removed and collocations (e.g., "climate_change") compounded into single tokens.
+These steps ensured that the textual data was uniform and ready for feature extraction.
+
+### Top-Down Model (Dictionary-Based VAD Scoring)
+
+In the top-down approach, a dictionary of word norms (BRM-emot-submit.csv) provided valence, arousal, and dominance (VAD) scores for individual words.
+Each post was tokenised, and for each token, its corresponding VAD scores were looked up in the dictionary.
+Tokens that did not match were ignored.
+For each post, the average of all available VAD scores was computed separately for valence, arousal, and dominance, creating three aggregate features.
+These features were then used as predictors in a LASSO logistic regression model.
+The idea is that the emotional tone of a post, as measured by these averages, can signal whether the post is from a "believer" or not.
+
+### Bottom-Up Model (Token-Level TF-IDF)
+
+The bottom-up model took a more granular approach by constructing a Document-Feature Matrix (DFM) from the tokenised text.
+TF-IDF (Term Frequency--Inverse Document Frequency) was computed to weigh each token according to its importance: tokens that were common in a document but rare across the corpus received higher weights.
+A sublinear variant of TF-IDF was also explored, applying a logarithmic transformation to term frequencies.
+These TF-IDF scores served as input features for a LASSO logistic regression classifier.
+The model identifies the most predictive tokens---those with the largest absolute coefficient values---such as "climate_change" or "winter," which are influential in determining the post's stance.
+
+### Model Fitting and Cross-Validation
+
+Both models employed 5-fold cross-validation to tune the regularisation parameter (lambda) in the LASSO logistic regression.
+For the top-down model, the predictor matrix was built from the average VAD scores, while the bottom-up model used the TF-IDF features from the DFM.
+Cross-validation splits the training data into five subsets, iteratively training on four and validating on the fifth, to select the lambda value that minimised the classification error.
+This ensures that each model is optimised for generalisation to new, unseen data.
+
+### Evaluation Metrics and AUC
+
+The performance of both models was evaluated using confusion matrices, accuracy, precision, recall, and the Area Under the ROC Curve (AUC).
+The ROC (Receiver Operating Characteristic) curve plots the true positive rate (sensitivity) against the false positive rate (1 -- specificity) for various threshold settings.
+AUC, or Area Under the Curve, quantifies the overall ability of the model to discriminate between classes: an AUC of 1 indicates perfect discrimination, while an AUC of 0.5 suggests no better than random guessing.
+
+In our experiments, the top-down model achieved an accuracy of around 0.60 and an AUC of approximately 0.61.
+Although it displayed perfect recall (meaning it identified all actual positive cases), its precision was very low, indicating many false positives.
+In contrast, the bottom-up model demonstrated higher accuracy (around 0.65) and a superior AUC near 0.73.
+This higher AUC signifies that the bottom-up model is more effective at ranking actual positive posts higher than negatives, reflecting its improved discriminative power.
+
+### Feature Importance and Interpretation
+
+For the top-down model, the features are limited to the three emotional dimensions.
+The coefficients derived from the LASSO regression indicate the directional influence of each dimension on the prediction.
+For instance, a positive coefficient for valence would suggest that higher average valence scores are associated with a higher probability of a post being from a "believer." While this approach offers clear interpretability regarding emotional tone, its performance is moderate due to the potential loss of nuanced information.
+
+On the other hand, the bottom-up model's feature space includes a vast array of tokens.
+By examining the absolute values of the coefficients from the LASSO regression, we can identify the most influential tokens.
+Visualisations of the top TF-IDF features---using scatter plots with tokens ordered by their score---reveal which words are most predictive.
+For example, tokens such as "climate_change," "winter," and "need" may emerge as top predictors.
+The high AUC and balanced precision and recall of the bottom-up model underscore its effectiveness in capturing the relevant linguistic signals.
+
+Overall Comparison Both models address the classification task from different perspectives.
+The top-down model leverages aggregated emotional norms to provide an interpretable, albeit coarser, representation of text sentiment.
+The bottom-up model, through its detailed token-level features, achieves better predictive performance and discriminative ability as reflected by its higher AUC.
+The ROC curves further reinforce that the bottom-up model outperforms the top-down approach in terms of overall classification quality.
