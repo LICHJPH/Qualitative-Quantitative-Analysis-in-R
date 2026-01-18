@@ -1,0 +1,160 @@
+---
+title: "Data interpretation and Data analysis skills"
+author: "Lok In Ho"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+date: "2025-12-11"
+---
+
+#### \*All the codes and write-up are written by the author. This document is a demonstration of the authors data interpretation and data analysis skills.
+
+Section 1 A three-way repeated-measures ANOVA was conducted to examine the effects of Reference Style (personalised vs. non-personalised), Bias (positive vs. negative), and Role Type (management vs. technical) on ratings of a fictitious job candidate (rated on a 0--100 scale). Descriptive statistics (i.e., means and standard deviations) for each condition are presented in Table 1, and estimated mean ratings are displayed in Figure 1.
+
+Descriptive Statistics Table 1 shows the mean ratings (*M*) and standard deviations (*SD*) by reference style (personalised vs. non-personalised), bias (positive vs. negative), and role type (management vs. technical). Overall, ratings tended to be higher for candidates described positively than those described negatively. Personalised references also appeared to yield higher ratings than non-personalised references, especially in the positive-bias condition. Role type influenced ratings such that management roles generally received higher ratings than technical roles.
+
+ANOVA Results The main effect of Bias was significant, *F*(1, 176) = 92.02, *p* \< .001, indicating that positively biased references yielded higher ratings than negatively biased references overall. There was also a significant main effect of Role Type, *F*(1, 176) = 157.98, *p* \< .001, with management roles receiving higher ratings than technical roles. A marginally significant main effect of Reference Style emerged, *F*(1, 176) = 4.35, *p* = .039, suggesting that personalised references were associated with slightly higher ratings than non-personalised references.
+
+All two-way interactions were significant: Bias × Reference Style, *F*(1, 176) = 29.24, *p* \< .001; Bias × Role Type, *F*(1, 176) = 18.40, *p* \< .001; and Reference Style × Role Type, *F*(1, 176) = 62.21, *p* \< .001. Furthermore, the three-way interaction (Bias × Reference Style × Role Type) was also significant, *F*(1, 176) = 4.44, *p* = .036, indicating that the combined impact of bias and reference style differed depending on whether the role type was management or technical.
+
+Post Hoc Comparisons Planned contrasts were conducted to further explore the three-way interaction. The difference between positive and negative bias was largest when references were personalised and the role was technical (estimate = 20.45, *SE* = 2.06, *t* = 9.95, *p* \< .001). Similarly, personalised references for management roles showed a notable positive--negative difference (estimate = 8.82, SE = 1.74, *t* = 5.06, *p* \< .0001). By contrast, for non-personalised references in management roles, the difference was not statistically significant (estimate = 2.40, SE = 2.08, *t* = 1.16, *p* = .249), while in technical roles it remained significant but was smaller than for personalised references (estimate = 6.00, SE = 1.66, *t* = 3.61, *p* = .0004).
+
+Section 2
+
+```{r}
+rm(list = ls())
+library(tidyverse)
+library(afex)
+library(emmeans)
+library(ez) 
+```
+
+```{r}
+#read the document
+data <- read.csv("candidate.csv")
+#check any missing data 
+colSums(is.na(data))
+
+#quick descriptive summary by each combination of factors
+data %>%
+  group_by(RoleType, Bias, Reference) %>%
+  summarise(
+    n            = n(),
+    mean_rating  = mean(Rating, na.rm = TRUE),
+    sd_rating    = sd(Rating, na.rm = TRUE)
+  ) %>%
+  arrange(RoleType, Bias, Reference)
+#turn them into factors
+data <- data %>%
+  mutate(
+    uID       = factor(uID),
+    Bias      = factor(Bias,      levels = c("Positive","Negative")),
+    Reference = factor(Reference, levels = c("Personalised","NonPersonal")),
+    RoleType  = factor(RoleType,  levels = c("Management","Technical"))
+  )
+# 3 way anova
+rm_aov <- aov_ez(
+  id       = "uID",              
+  dv       = "Rating",           
+  data     = data,               
+  within   = c("Bias","Reference","RoleType"),
+  type     = 3                   
+)
+
+summary(rm_aov)
+#calculate the model-estimated means
+em_means <- emmeans(rm_aov, ~ Bias * Reference * RoleType)
+pairs(em_means, by = c("Reference","RoleType"))
+
+#convert it into data frames
+df_em <- as.data.frame(em_means)
+
+# 3) Plot with ggplot
+ggplot(df_em, aes(x = Reference, y = emmean, 
+                  color = Bias, group = Bias)) +
+
+  geom_point(position = position_dodge(width = 0.3), size = 3) +
+  
+
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL),
+                width = 0.2,
+                position = position_dodge(width = 0.3)) +
+  facet_wrap(~ RoleType) +
+  theme_bw() +
+  labs(
+    x = "Reference Style",
+    y = "Estimated Mean Rating",
+    color = "Bias",
+    title = "Effect of Reference Style and Bias on Ratings, by Role Type"
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+Task 2 Section 2
+
+```{r}
+data <- read.csv("speed_greed.csv")
+
+data_long <- data %>%
+  pivot_longer(
+    cols = starts_with("L"),
+    names_to = c("Level", "Trial"),
+    names_pattern = "(L\\d)_(\\d+)",
+    values_to = "RiskChoice"
+  ) %>%
+  mutate(
+    Level = factor(Level, levels = c("L1", "L2", "L3")),
+    Trial = as.integer(Trial),
+    ParticipantID = as.factor(ParticipantID),
+    Experience = as.factor(Experience)
+  )
+#calculate the proportion of risky choices
+data_agg <- data_long %>%
+  group_by(ParticipantID, Experience, Level) %>%
+  summarise(meanRisk = mean(RiskChoice, na.rm = TRUE)) %>%
+  ungroup()
+# Convert Experience & Level to factors
+data_agg <- data_agg %>%
+  mutate(
+    Experience = factor(Experience),
+    Level      = factor(Level, levels = c("L1", "L2", "L3"))  # or your preferred order
+  )
+#anova
+anova_results <- ezANOVA(
+  data = data_agg,
+  dv   = meanRisk,       
+  wid  = ParticipantID,  
+  between = Experience,   
+  within  = Level,        
+  type    = 3,            
+  detailed = TRUE
+)
+
+anova_results
+#compare each pair of Experience conditions
+model_lm <- lm(meanRisk ~ Experience * Level, data = data_agg)
+posthoc_experience <- emmeans(model_lm, pairwise ~ Experience)
+posthoc_experience
+#for level
+posthoc_level <- emmeans(model_lm, pairwise ~ Level)
+posthoc_level
+
+data_agg %>%
+  group_by(Experience, Level) %>%
+  summarise(
+    M = mean(meanRisk),
+    SD = sd(meanRisk),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = Level, y = M, group = Experience, colour = Experience)) +
+    geom_point(position = position_dodge(width = 0.2), size = 2) +
+    geom_line(position = position_dodge(width = 0.2)) +
+    geom_errorbar(aes(ymin = M - SD, ymax = M + SD), 
+                  width = 0.1, position = position_dodge(width = 0.2)) +
+    labs(x = "Level", y = "Proportion of Risky Choices", 
+         title = "Mean Risk Choices by Experience and Level") +
+    theme_minimal()
+
+```
