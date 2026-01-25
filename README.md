@@ -56,7 +56,8 @@ This document contains three distinct computational projects:
 * **Tech Stack:** R / Agent-Based Frameworks.
 * **Relevance:** Demonstrates advanced computational modelling capabilities applicable to housing market dynamics and supply-chain network effects.
 
-**📂 File 4: `behavioural_financial_analysis.py`
+**📂 File 4: 
+**Filename:** `Networking and Agent based Model.qmd``behavioural_financial_analysis.py`
 
 This project demonstrates a full data engineering and analysis pipeline, automating the retrieval and statistical validation of behavioural datasets.
 
