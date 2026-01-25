@@ -1,6 +1,6 @@
 # Portfolio: Computational Economics & Data Science
 **Candidate:** Lok In Ho
-**Application:** Research Assistant (Economics) | Ref: 111136-1225
+
 
 ## Overview
 This repository contains my core computational work samples, demonstrating proficiency in **Big Data Construction**, **Machine Learning**, **Econometric Simulation**, and **Agent-Based Modelling**.
