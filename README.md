@@ -58,7 +58,7 @@ This document contains three distinct computational projects:
   
 ## 📂 File 4: Automated Data Analysis Pipeline & API Integration (Python)
 
-**Filename:** `behavioural_financial_analysis.py`
+**Filename:** `Python_Financial_Analysis/behavioural_financial_analysis.py`
 
 This project demonstrates a full data engineering and analysis pipeline, automating the retrieval and statistical validation of behavioural datasets.
 
