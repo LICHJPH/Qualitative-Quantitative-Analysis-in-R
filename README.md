@@ -5,7 +5,7 @@
 ## Overview
 This repository contains my core computational work samples, demonstrating proficiency in **Big Data Construction**, **Machine Learning**, **Econometric Simulation**, and **Agent-Based Modelling**.
 
-These files were selected to demonstrate the technical skills required for the Nuffield-funded "Towards housing affordability" project.
+
 
 ---
 
